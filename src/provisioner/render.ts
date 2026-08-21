@@ -30,9 +30,27 @@ export const CONTAINER_GID = Number(process.env.HERMES_HOST_GID ?? (process.getg
 /** Tailnet address the phone gateway reaches webhook listeners on. */
 export const HOOK_BIND_IP = process.env.HERMES_HOOK_BIND_IP ?? '100.97.6.94';
 
-/** Fleet default model — the same Anthropic model the OpenClaw fleet runs. */
-export const FLEET_MODEL = process.env.HERMES_FLEET_MODEL ?? 'claude-opus-4-8';
-export const FLEET_PROVIDER = process.env.HERMES_FLEET_PROVIDER ?? 'anthropic';
+/** Fleet default model/provider; override at render time with HERMES_FLEET_MODEL / HERMES_FLEET_PROVIDER. */
+export const FLEET_MODEL = process.env.HERMES_FLEET_MODEL || 'claude-opus-4-8';
+export const FLEET_PROVIDER = process.env.HERMES_FLEET_PROVIDER || 'anthropic';
+
+/**
+ * The secret each provider reads from $HERMES_HOME/.env (Hermes' own names).
+ * Inherited from the control plane's environment at render time; empty or
+ * placeholder values are treated as missing so `apply` keeps reporting them.
+ */
+export const PROVIDER_KEY_ENV: Record<string, string | undefined> = {
+  anthropic: 'ANTHROPIC_API_KEY',
+  openai: 'OPENAI_API_KEY',
+  openrouter: 'OPENROUTER_API_KEY',
+  nous: undefined, // OAuth via `hermes setup --portal` (auth.json), no key
+};
+
+function inheritedSecret(key: string | undefined): string {
+  if (!key) return '';
+  const value = (process.env[key] ?? '').trim();
+  return value && value !== 'changeme' ? value : '';
+}
 
 function ensureDirForContainer(dir: string, mode = 0o755): void {
   mkdirSync(dir, { recursive: true, mode });
@@ -235,7 +253,8 @@ function renderHermesEnv(tenant: Tenant, dataDir: string, channelReady: boolean)
     env.set(key, value);
   };
 
-  ensure('ANTHROPIC_API_KEY', process.env.ANTHROPIC_API_KEY ?? 'changeme');
+  const providerKey = PROVIDER_KEY_ENV[FLEET_PROVIDER];
+  if (providerKey) ensure(providerKey, inheritedSecret(providerKey) || 'changeme');
 
   // The Rocket.Chat bridge speaks to this; loopback-published only.
   set('API_SERVER_ENABLED', 'true');
