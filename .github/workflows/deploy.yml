@@ -1,9 +1,12 @@
 name: Deploy managed Hermes fleet
 
-# Mirror of devops/.github/workflows/deploy-managed-hermes-fleet.yml. The
-# fleet box's runner is registered to the devops repo, so that copy is the
-# one that actually runs; this file documents the same rollout next to the
-# code it deploys.
+# The fleet box's runner is registered to the devops repo, so the rollout
+# itself lives there (devops/.github/workflows/deploy-managed-hermes-fleet.yml:
+# clone/update ~/managed-hermes, ensure hermes1..5, build the image, roll with
+# a canary, register phone hooks, install the Rocket.Chat bridge). This
+# workflow just asks devops to run it on every push to main, the same way
+# 8examples triggers its own deploy. Needs the DEPLOY_TOKEN secret (a PAT
+# with repo scope on 8exgh/devops).
 
 on:
   workflow_dispatch:
@@ -19,72 +22,18 @@ on:
   push:
     branches: [main]
 
-concurrency:
-  group: managed-hermes-fleet
-  cancel-in-progress: false
-
 jobs:
-  deploy:
-    runs-on: [self-hosted, Linux, X64, openclaw-dc]
+  dispatch:
+    runs-on: ubuntu-latest
     steps:
-      - name: Update control plane, build the image, and roll out tenants
+      - name: Trigger the fleet rollout in devops
         env:
           CANARY: ${{ inputs.canary || 'hermes1' }}
           ENSURE_COUNT: ${{ inputs.ensure_count || '5' }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          HERMES_TELEMETRY_TOKEN: ${{ secrets.HERMES_TELEMETRY_TOKEN }}
-          HERMES_PHONE_HOOK_URL_TEMPLATE: ${{ vars.HERMES_PHONE_HOOK_URL_TEMPLATE }}
         run: |
-          set -euo pipefail
-          if [ ! -d "$HOME/managed-hermes/.git" ]; then
-            git clone https://github.com/8exgh/hermes-8examples "$HOME/managed-hermes"
-          fi
-          cd "$HOME/managed-hermes"
-          git fetch origin main
-          git checkout main
-          git pull --ff-only origin main
-          npm ci
-          npm run typecheck
-
-          # First rollout on a box: create the fleet before updating it. Safe to
-          # re-run — existing tenants are skipped.
-          for i in $(seq 1 "$ENSURE_COUNT"); do
-            id="hermes$i"
-            if ! jq -e --arg id "$id" '.[] | select(.id == $id)' data/tenants.json >/dev/null 2>&1; then
-              MH_NO_START=1 npm run cli -- signup --id "$id" --name "Hermes $i"
-            fi
-          done
-
-          npm run cli -- update --canary "$CANARY"
-
-          phone_tenants=$(jq '[.[] | select(.offboardedAt == null and .capabilities.phone.enabled == true)] | length' data/tenants.json)
-          if [ "$phone_tenants" -eq 0 ]; then exit 0; fi
-          case "$HERMES_PHONE_HOOK_URL_TEMPLATE" in
-            http://100.*'{port}'*|https://*'{port}'*) ;;
-            *) echo "HERMES_PHONE_HOOK_URL_TEMPLATE must be a tailnet HTTP or HTTPS URL containing {port}"; exit 1;;
-          esac
-          jq -r '.[] | select(.offboardedAt == null and .capabilities.phone.enabled == true) | .id' data/tenants.json |
-          while read -r tenant; do
-            env_file="tenants/$tenant/.env"
-            hermes_env="tenants/$tenant/data/.env"
-            gateway=$(sed -n 's/^PHONE_GATEWAY_URL=//p' "$env_file")
-            phone_key=$(sed -n 's/^PHONE_GATEWAY_API_KEY=//p' "$env_file")
-            hook_token=$(sed -n 's/^WEBHOOK_PHONE_SECRET=//p' "$hermes_env")
-            port=$(jq -r --arg tenant "$tenant" '.[] | select(.id == $tenant) | .hookPort' data/tenants.json)
-            hook_url="${HERMES_PHONE_HOOK_URL_TEMPLATE//\{tenant\}/$tenant}"
-            hook_url="${hook_url//\{port\}/$port}"
-            [ -n "$gateway" ] && [ -n "$phone_key" ] && [ -n "$hook_token" ] || {
-              echo "missing phone credentials for $tenant"; exit 1;
-            }
-            curl --fail-with-body --silent --show-error -X POST "$gateway/notify-config" \
-              -H "Authorization: Bearer $phone_key" \
-              -H 'content-type: application/json' \
-              --data "$(jq -nc --arg url "$hook_url" --arg token "$hook_token" \
-                '{url:$url,headers:{"X-Gitlab-Token":$token}}')" >/dev/null
-            curl --fail-with-body --silent --show-error -X POST "$hook_url" \
-              -H "X-Gitlab-Token: $hook_token" \
-              -H 'content-type: application/json' \
-              -H "X-Request-ID: rollout-probe-$tenant-${GITHUB_RUN_ID}" \
-              --data '{"event":"probe","message":"Phone hook configuration probe. Verify the phone capability instructions are available; do not contact anyone or perform external work."}' >/dev/null
-            echo "registered and verified phone hook for $tenant"
-          done
+          curl -f -X POST \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ secrets.DEPLOY_TOKEN }}" \
+            https://api.github.com/repos/8exgh/devops/dispatches \
+            -d "$(jq -nc --arg canary "$CANARY" --arg count "$ENSURE_COUNT" \
+              '{event_type:"deploy-managed-hermes-fleet",client_payload:{canary:$canary,ensure_count:$count}}')"

@@ -190,11 +190,15 @@ changes in `tenant.resources`/capabilities, or extend the renderer.
 
 ## Deploying
 
-`.github/workflows/deploy.yml` (mirrored as `deploy-managed-hermes-fleet.yml`
-in `devops`, which is where the fleet box's runner listens) clones/updates
-`~/managed-hermes` on the box, creates `hermes1..hermes5` if missing, builds
-the image, rolls the fleet with `hermes1` as canary, and (re)registers phone
-hooks for phone-enabled tenants.
+The fleet box's runner is registered to the `devops` repo, so the rollout
+lives there: `devops/.github/workflows/deploy-managed-hermes-fleet.yml`
+clones/updates `~/managed-hermes` on the box, creates `hermes1..hermes5` if
+missing, builds the image, rolls the fleet with `hermes1` as canary,
+(re)registers phone hooks for phone-enabled tenants, and installs/refreshes
+the Rocket.Chat bridge (`/etc/hermes/rc-bridge.env` + systemd unit + ufw).
+`.github/workflows/deploy.yml` here just dispatches that workflow on every
+push to `main` (secret `DEPLOY_TOKEN`). Rocket.Chat users/channels come from
+`devops/.github/workflows/provision-rocketchat-hermes.yml`.
 
 ## Suggested cron
 
