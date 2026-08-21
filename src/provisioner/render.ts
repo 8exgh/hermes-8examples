@@ -41,7 +41,7 @@ export const FLEET_PROVIDER = process.env.HERMES_FLEET_PROVIDER || 'anthropic';
  */
 export const PROVIDER_KEY_ENV: Record<string, string | undefined> = {
   anthropic: 'ANTHROPIC_API_KEY',
-  openai: 'OPENAI_API_KEY',
+  'openai-api': 'OPENAI_API_KEY', // Hermes' direct-OpenAI provider slug
   openrouter: 'OPENROUTER_API_KEY',
   nous: undefined, // OAuth via `hermes setup --portal` (auth.json), no key
 };
