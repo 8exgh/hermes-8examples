@@ -2,7 +2,7 @@ import { rmSync } from 'node:fs';
 import path from 'node:path';
 import { CAPABILITIES, capability } from './capabilities/registry.js';
 import { deliverToWorkspace, pickNudge } from './nudges/engine.js';
-import { buildFleetImage, dockerAvailable, imageExists } from './provisioner/docker.js';
+import { buildFleetImage, dockerAvailable, imageExists, pullFleetImage } from './provisioner/docker.js';
 import { getProvisioner } from './provisioner/index.js';
 import { managedVersion } from './provisioner/render.js';
 import {
@@ -152,11 +152,12 @@ async function waitHealthy(tenant: Tenant, attempts = 6, gapMs = 5000): Promise<
 }
 
 /**
- * Fleet update: rebuild the fleet image on the newest upstream Hermes release
- * (docker build --pull), pin the build, then re-render every active tenant on
- * the newest managed templates and rolling-restart them. With `canary`, that
- * tenant is updated first and must pass a health check before the rollout
- * continues — run your own instance as tenant zero.
+ * Fleet update: pull the newest CI-built fleet image (or, with
+ * MH_BUILD_LOCAL=1, build it here on the newest upstream Hermes), pin it,
+ * then re-render every active tenant on the newest managed templates and
+ * rolling-restart them. With `canary`, that tenant is updated first and must
+ * pass a health check before the rollout continues — run your own instance
+ * as tenant zero.
  */
 export async function updateFleet(
   opts: { start?: boolean; canary?: string; build?: boolean } = {},
@@ -164,7 +165,10 @@ export async function updateFleet(
   const fleet = loadFleet();
 
   if (dockerAvailable() && opts.build !== false && process.env.MH_NO_BUILD !== '1') {
-    const next = buildFleetImage(fleet.image, fleet.baseImage);
+    const next =
+      process.env.MH_BUILD_LOCAL === '1'
+        ? buildFleetImage(fleet.image, fleet.baseImage)
+        : pullFleetImage(fleet.image);
     if (fleet.pinnedImageRef && fleet.pinnedImageRef !== next) {
       fleet.previousImageRef = fleet.pinnedImageRef;
     }

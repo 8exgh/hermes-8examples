@@ -33,8 +33,9 @@ pattern, different agent runtime.
 ```bash
 npm install
 
-# Build the fleet image (upstream nousresearch/hermes-agent + headful Chromium on Xvfb + telemetry)
-npm run cli -- update            # builds image/, pins it, (re)renders every tenant
+# Pull the CI-built fleet image (upstream nousresearch/hermes-agent + headful Chromium on Xvfb + telemetry)
+npm run cli -- update            # pulls + pins ghcr.io/8exgh/hermes-8examples, (re)renders every tenant
+MH_BUILD_LOCAL=1 npm run cli -- update   # development: build image/ here instead
 
 # Provision a customer (renders tenants/<id>/ and starts their container if docker is up)
 npm run cli -- signup --id hermes1 --name "Hermes 1"
@@ -132,9 +133,13 @@ them conversationally (via the outbox) and moves them to `DELIVERED.md`. The
 `offload-radar` skill (installed into `data/skills/`) covers the reactive side.
 
 **3. Everyone on the newest version** — `src/ops.ts#updateFleet`.
-`npm run cli -- update` runs `docker build --pull` on `image/` (so the newest
-upstream Hermes release is pulled), tags the build, re-renders every tenant
-from the newest templates, and rolling-restarts the containers. The "managed
+CI (`.github/workflows/deploy.yml`, on every push and nightly) builds
+`image/` on the newest upstream Hermes release and pushes
+`ghcr.io/8exgh/hermes-8examples`; `npm run cli -- update` pulls it, pins the
+digest, re-renders every tenant from the newest templates, and
+rolling-restarts the containers (`MH_BUILD_LOCAL=1` builds the image on the
+box instead — development only; the fleet box's egress is too slow for the
+Chromium download). The "managed
 version" is a hash of templates + image recipe + code version, so
 `list`/`status` show exactly who is behind. New signups always provision on the
 current release. Run it from cron or the deploy workflow.
@@ -196,8 +201,9 @@ clones/updates `~/managed-hermes` on the box, creates `hermes1..hermes5` if
 missing, builds the image, rolls the fleet with `hermes1` as canary,
 (re)registers phone hooks for phone-enabled tenants, and installs/refreshes
 the Rocket.Chat bridge (`/etc/hermes/rc-bridge.env` + systemd unit + ufw).
-`.github/workflows/deploy.yml` here just dispatches that workflow on every
-push to `main` (secret `DEPLOY_TOKEN`). Rocket.Chat users/channels come from
+`.github/workflows/deploy.yml` here builds and pushes the image to ghcr on
+every push to `main` (and nightly, so the fleet tracks upstream Hermes), then
+dispatches that workflow (secret `DEPLOY_TOKEN`, also used for the ghcr push). Rocket.Chat users/channels come from
 `devops/.github/workflows/provision-rocketchat-hermes.yml`.
 
 ## Suggested cron

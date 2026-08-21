@@ -69,14 +69,15 @@ export interface Tenant {
 
 export interface Fleet {
   /**
-   * The image every tenant runs. Built locally from image/ on top of the
-   * upstream nousresearch/hermes-agent image (see image/Dockerfile), so
-   * `update` rebuilds with --pull and tags the result.
+   * The image every tenant runs: image/Dockerfile (upstream
+   * nousresearch/hermes-agent + Xvfb + headful Chromium + telemetry), built
+   * by CI and published to ghcr. `update` pulls it and pins the digest;
+   * MH_BUILD_LOCAL=1 builds it here instead (development).
    */
   image: string;
-  /** Upstream base the image is built FROM; `update` pulls its newest digest. */
+  /** Upstream base the image is built FROM (local builds only). */
   baseImage: string;
-  /** Build-pinned tag resolved at the last `update`, so the whole fleet runs one build. */
+  /** Digest- or build-pinned ref resolved at the last `update`, so the whole fleet runs one build. */
   pinnedImageRef?: string;
   /** What the fleet ran before the last update — the one-command rollback target. */
   previousImageRef?: string;

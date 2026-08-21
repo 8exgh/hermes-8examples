@@ -54,8 +54,9 @@ Usage: npm run cli -- <command> [args]
   apply <tenant>                Re-render on current templates/config + restart
   nudge [tenant]                Run the nudge engine (all tenants if omitted)
   update [--canary <tenant>] [--no-build]
-                                Fleet update: rebuild the image on the newest
-                                upstream Hermes, re-render every tenant, rolling
+                                Fleet update: pull the newest CI-built image
+                                (MH_BUILD_LOCAL=1: build it here on the newest
+                                upstream Hermes), re-render every tenant, rolling
                                 restart. With --canary, that tenant updates first
                                 and must pass a health check before the rollout
                                 continues. --no-build reuses the pinned image.
@@ -69,7 +70,7 @@ Usage: npm run cli -- <command> [args]
 
 Capabilities: ${CAPABILITIES.map((c) => c.id).join(', ')}
 Flags: --no-start (or MH_NO_START=1) renders without touching docker;
-       MH_NO_BUILD=1 skips the image build on update
+       MH_NO_BUILD=1 skips the image pull/build on update; MH_BUILD_LOCAL=1 builds image/ locally
 `;
 
 async function main(): Promise<void> {

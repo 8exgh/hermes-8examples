@@ -35,9 +35,10 @@ RUN apt-get -o Acquire::Retries=3 update \
 # PLAYWRIGHT_BROWSERS_PATH (/opt/hermes/.playwright) that survives the
 # /opt/data volume overlay.
 RUN cd /opt/hermes \
-    && for i in 1 2 3; do \
+    && export PLAYWRIGHT_DOWNLOAD_CONNECTION_TIMEOUT=180000 \
+    && for i in 1 2 3 4 5; do \
         npx playwright install --with-deps chromium && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+        { [ "$i" = 5 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 15s"; sleep 15; }; \
        done \
     && rm -rf /var/lib/apt/lists/* \
     && CHROME="$(find /opt/hermes/.playwright -type f -name chrome -path '*chromium-*/chrome-linux*' | head -n 1)" \

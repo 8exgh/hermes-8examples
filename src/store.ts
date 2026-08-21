@@ -16,8 +16,13 @@ const TENANTS_FILE = path.join(DATA_DIR, 'tenants.json');
 export const FIRST_PORT = 28001;
 export const HOOK_PORT_OFFSET = 1000;
 
+/** Built by .github/workflows/deploy.yml in CI and pulled here; local builds use MH_BUILD_LOCAL=1. */
+export const DEFAULT_IMAGE = 'ghcr.io/8exgh/hermes-8examples:latest';
+/** The pre-registry default; fleets rendered with it are moved to DEFAULT_IMAGE on load. */
+const LEGACY_LOCAL_IMAGE = 'hermes-8examples:latest';
+
 const DEFAULT_FLEET: Fleet = {
-  image: 'hermes-8examples:latest',
+  image: DEFAULT_IMAGE,
   baseImage: 'nousresearch/hermes-agent:latest',
   nextPort: FIRST_PORT,
 };
@@ -33,7 +38,9 @@ function writeJson(file: string, value: unknown): void {
 }
 
 export function loadFleet(): Fleet {
-  return { ...DEFAULT_FLEET, ...readJson<Partial<Fleet>>(FLEET_FILE, {}) };
+  const fleet = { ...DEFAULT_FLEET, ...readJson<Partial<Fleet>>(FLEET_FILE, {}) };
+  if (fleet.image === LEGACY_LOCAL_IMAGE && process.env.MH_BUILD_LOCAL !== '1') fleet.image = DEFAULT_IMAGE;
+  return fleet;
 }
 
 export function saveFleet(fleet: Fleet): void {

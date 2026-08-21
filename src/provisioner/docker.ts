@@ -86,6 +86,31 @@ export function buildFleetImage(image: string, baseImage: string): string {
   return pinned;
 }
 
+/** Pull the CI-built fleet image (with retries) and return its digest-pinned ref. */
+export function pullFleetImage(image: string): string {
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    try {
+      execFileSync('docker', ['pull', image], { stdio: 'inherit' });
+      break;
+    } catch (err) {
+      if (attempt === 4) throw err;
+      console.warn(`docker pull ${image} failed (attempt ${attempt}); retrying in ${attempt * 15}s`);
+      execFileSync('sleep', [String(attempt * 15)]);
+    }
+  }
+  return resolveDigest(image) ?? image;
+}
+
+/** Resolve the digest-pinned ref for an image so the whole fleet runs one build. */
+export function resolveDigest(image: string): string | undefined {
+  try {
+    const out = docker(['image', 'inspect', image, '--format', '{{index .RepoDigests 0}}']).trim();
+    return out && out !== '<no value>' ? out : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function imageExists(image: string): boolean {
   try {
     docker(['image', 'inspect', image, '--format', '{{.Id}}']);

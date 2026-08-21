@@ -1,14 +1,21 @@
-name: Deploy managed Hermes fleet
+name: Build fleet image and deploy managed Hermes fleet
 
-# The fleet box's runner is registered to the devops repo, so the rollout
-# itself lives there (devops/.github/workflows/deploy-managed-hermes-fleet.yml:
-# clone/update ~/managed-hermes, ensure hermes1..5, build the image, roll with
-# a canary, register phone hooks, install the Rocket.Chat bridge). This
-# workflow just asks devops to run it on every push to main, the same way
-# 8examples triggers its own deploy. Needs the DEPLOY_TOKEN secret (a PAT
-# with repo scope on 8exgh/devops).
+# 1. Build image/ (upstream nousresearch/hermes-agent + Xvfb + headful
+#    Chromium + hermes-telemetry) on a GitHub runner — the fleet box's egress
+#    is too slow for the Chromium download — and push it to ghcr.
+# 2. Ask devops to roll the fleet (its runner is the one registered on the
+#    fleet box): devops/.github/workflows/deploy-managed-hermes-fleet.yml pulls
+#    the image, pins the digest, re-renders and restarts every tenant with a
+#    canary, registers phone hooks and installs the Rocket.Chat bridge.
+#
+# Nightly schedule = "everyone on the newest upstream Hermes" without a hand
+# on the wheel. DEPLOY_TOKEN: PAT with packages:write + repo scope on devops.
 
 on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 10 * * *" # 04:00 Calgary
   workflow_dispatch:
     inputs:
       canary:
@@ -19,11 +26,53 @@ on:
         description: Make sure hermes1..hermesN exist (0 = do not create any)
         required: false
         default: "5"
-  push:
-    branches: [main]
+
+concurrency:
+  group: hermes-fleet-image
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/8exgh/hermes-8examples
 
 jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.DEPLOY_TOKEN }}
+
+      - name: Generate timestamp
+        id: timestamp
+        run: echo "timestamp=$(date +%Y%m%d-%H%M%S)" >> $GITHUB_OUTPUT
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: image
+          platforms: linux/amd64
+          pull: true # newest upstream nousresearch/hermes-agent every build
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.timestamp.outputs.timestamp }}
+            ${{ env.IMAGE }}:sha-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
   dispatch:
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - name: Trigger the fleet rollout in devops
