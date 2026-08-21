@@ -18,8 +18,11 @@ per-person access control — without Hermes having native Rocket.Chat support.
   instance the OpenClaw fleet uses.
 - **provision.mjs** — creates users `hermes1..hermes5`, five **private**
   channels of the same name, a `hermes-bridge` bot, and one outgoing webhook
-  covering the channels. `PASSWORDS_JSON` keeps the chat passwords identical
-  to the ones `8examples` hands out at signup.
+  covering the channels. `PASSWORDS_JSON` sets each user's chat password; the
+  devops workflow `provision-rocketchat-hermes.yml` defaults it to the
+  `SEED_HERMES` passwords in `8examples/src/app/lib/claw-store.ts`, so what
+  Rocket.Chat accepts is exactly what the claim page and welcome email hand
+  out. Re-running re-applies the passwords to existing users.
 - **bridge.mjs** — runs on the fleet box (`deploy-bridge.sh` → systemd
   `hermes-rc-bridge`). Receives the webhook, forwards the message to the
   matching worker's OpenAI-compatible API server with a stable
