@@ -58,9 +58,24 @@ export function containerStatus(tenant: Tenant): string {
  * every tenant runs the identical build until the next update.
  */
 export function buildFleetImage(image: string, baseImage: string): string {
+  // Pull the upstream base with retries first: the fleet box's egress has
+  // dropped mid-pull on Docker Hub's CDN before ("read: connection timed
+  // out"), and one blip must not fail a whole rollout. Docker resumes the
+  // layers it already has, so a retry is cheap.
+  let pulled = false;
+  for (let attempt = 1; attempt <= 4 && !pulled; attempt++) {
+    try {
+      execFileSync('docker', ['pull', baseImage], { stdio: 'inherit' });
+      pulled = true;
+    } catch (err) {
+      if (attempt === 4) throw err;
+      console.warn(`docker pull ${baseImage} failed (attempt ${attempt}); retrying in ${attempt * 15}s`);
+      execFileSync('sleep', [String(attempt * 15)]);
+    }
+  }
   execFileSync(
     'docker',
-    ['build', '--pull', '--build-arg', `HERMES_BASE=${baseImage}`, '-t', image, IMAGE_DIR],
+    ['build', '--build-arg', `HERMES_BASE=${baseImage}`, '-t', image, IMAGE_DIR],
     { stdio: 'inherit' },
   );
   const id = docker(['image', 'inspect', image, '--format', '{{.Id}}']).trim();
