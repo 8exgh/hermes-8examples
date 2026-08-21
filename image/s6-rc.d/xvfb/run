@@ -1,0 +1,6 @@
+#!/command/with-contenv sh
+# Virtual display for the headful Chromium the agent's browser tools drive.
+# Supervised by s6: if Xvfb dies it is restarted within a second, and the
+# browser simply reconnects on its next launch. Runs as the hermes user so
+# the X socket/lock files it writes never end up root-owned.
+exec s6-setuidgid hermes /usr/bin/Xvfb "${DISPLAY:-:99}" -screen 0 1920x1080x24 -nolisten tcp -ac 2>&1

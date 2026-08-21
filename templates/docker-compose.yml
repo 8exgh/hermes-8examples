@@ -1,0 +1,71 @@
+name: "hermes-{{TENANT_ID}}"
+
+services:
+  hermes:
+    image: "{{IMAGE}}"
+    container_name: "hermes-{{TENANT_ID}}"
+    restart: unless-stopped
+    # No init:true — s6-overlay must own PID 1 (the image's entrypoint falls
+    # back to an unsupervised mode otherwise).
+    env_file: .env
+    environment:
+      # The container starts as root for its stage2 bootstrap, then every
+      # supervised process drops to the `hermes` user, remapped to the host
+      # uid/gid that owns ./data so files land owned by the control plane.
+      - HERMES_UID={{HERMES_UID}}
+      - HERMES_GID={{HERMES_GID}}
+      # Real headful Chromium on a virtual display — full rendering, not the
+      # headless shell. Xvfb is an s6 service inside the image (DISPLAY=:99);
+      # the browser tools attach to it. NO_SANDBOX because cap_drop:ALL removes
+      # what Chrome's own sandbox needs (the container is the isolation
+      # boundary). These mirror the image defaults; kept explicit here so the
+      # compose file documents the contract.
+      - DISPLAY=:99
+      - AGENT_BROWSER_HEADED=1
+      - AGENT_BROWSER_EXECUTABLE_PATH=/opt/hermes/.playwright/chrome
+      - AGENT_BROWSER_ARGS=--no-sandbox,--disable-dev-shm-usage
+      # Dangerous-command approvals have no human on the other end of an API
+      # server / webhook session; the container is the sandbox, same posture
+      # as the OpenClaw fleet.
+      - HERMES_YOLO_MODE=1
+      # Call-home telemetry (hermes-telemetry on npm, supervised inside the
+      # image). The access token comes from .env (HERMES_TELEMETRY_TOKEN,
+      # written by the control plane); with no token the reporter parks itself.
+      - HERMES_TELEMETRY_URL=https://8examples.com/hermes/telemetry
+      - HERMES_TELEMETRY_AGENT={{TENANT_ID}}
+      # Workers have no public hostname of their own (the phone gateway reaches
+      # them over the tailnet), so the <agent>.fusenv.com portmap probe is off.
+      - HERMES_TELEMETRY_PORTMAP=off
+    command: ["gateway", "run"]
+    ports:
+      # OpenAI-compatible API server: only reachable from the host; the
+      # Rocket.Chat bridge talks to it.
+      - "127.0.0.1:{{PORT}}:8642"
+      # Webhook listener: the phone gateway wakes the worker over the private
+      # tailnet (POST /webhooks/phone, X-Gitlab-Token auth).
+      - "127.0.0.1:{{HOOK_PORT}}:8644"
+{{HOOK_TAILNET_PORT_LINE}}    volumes:
+      # $HERMES_HOME: config.yaml, .env, SOUL.md, workspace/, skills/, memories/,
+      # sessions/, cron/, state.db — the tenant's entire durable state.
+      - ./data:/opt/data
+    security_opt:
+      - no-new-privileges:true
+    # Root is needed only for the image's stage2 bootstrap (usermod/chown of the
+    # data volume) and for s6 to supervise processes running as the hermes
+    # user; these are the capabilities that work needs and nothing more.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - FSETID
+      - SETGID
+      - SETUID
+      - SETPCAP
+      - KILL
+    mem_limit: "{{MEM_LIMIT}}"
+    memswap_limit: "{{MEM_LIMIT}}" # no swap escape hatch — fail fast, don't thrash the host
+    cpus: "{{CPUS}}"
+    pids_limit: {{PIDS_LIMIT}}
+    shm_size: 1g # Chrome dies on Docker's 64m default

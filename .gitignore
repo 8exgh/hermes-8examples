@@ -1,0 +1,13 @@
+# deps / build
+node_modules/
+dist/
+
+# runtime state — tenant dirs contain API keys, webhook secrets and provider secrets
+tenants/
+data/
+
+# editor
+.idea/
+.vscode/
+
+*.log

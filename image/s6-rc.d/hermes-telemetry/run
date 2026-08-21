@@ -1,0 +1,20 @@
+#!/command/with-contenv sh
+# Call-home telemetry (hermes-telemetry on npm), supervised by s6.
+#
+# With no HERMES_TELEMETRY_TOKEN the service parks itself (sleep) instead of
+# crash-looping: the slot stays "up" and quiet. With a token, `timeout 86400`
+# recycles the reporter once a day and each relaunch runs
+# `npx hermes-telemetry@latest` with prefer-online, so the fleet picks up the
+# newest published reporter every 24h and on every container restart —
+# the same contract the OpenClaw fleet runs.
+if [ -z "${HERMES_TELEMETRY_TOKEN:-}" ]; then
+    exec sleep infinity
+fi
+export HOME=/opt/data
+export npm_config_prefer_online=true
+export npm_config_update_notifier=false
+cd /opt/data
+while true; do
+    s6-setuidgid hermes timeout 86400 npx -y hermes-telemetry@latest run
+    sleep 5
+done

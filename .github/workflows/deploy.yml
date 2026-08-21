@@ -1,0 +1,90 @@
+name: Deploy managed Hermes fleet
+
+# Mirror of devops/.github/workflows/deploy-managed-hermes-fleet.yml. The
+# fleet box's runner is registered to the devops repo, so that copy is the
+# one that actually runs; this file documents the same rollout next to the
+# code it deploys.
+
+on:
+  workflow_dispatch:
+    inputs:
+      canary:
+        description: Tenant to update first
+        required: false
+        default: hermes1
+      ensure_count:
+        description: Make sure hermes1..hermesN exist (0 = do not create any)
+        required: false
+        default: "5"
+  push:
+    branches: [main]
+
+concurrency:
+  group: managed-hermes-fleet
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, Linux, X64, openclaw-dc]
+    steps:
+      - name: Update control plane, build the image, and roll out tenants
+        env:
+          CANARY: ${{ inputs.canary || 'hermes1' }}
+          ENSURE_COUNT: ${{ inputs.ensure_count || '5' }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          HERMES_TELEMETRY_TOKEN: ${{ secrets.HERMES_TELEMETRY_TOKEN }}
+          HERMES_PHONE_HOOK_URL_TEMPLATE: ${{ vars.HERMES_PHONE_HOOK_URL_TEMPLATE }}
+        run: |
+          set -euo pipefail
+          if [ ! -d "$HOME/managed-hermes/.git" ]; then
+            git clone https://github.com/8exgh/hermes-8examples "$HOME/managed-hermes"
+          fi
+          cd "$HOME/managed-hermes"
+          git fetch origin main
+          git checkout main
+          git pull --ff-only origin main
+          npm ci
+          npm run typecheck
+
+          # First rollout on a box: create the fleet before updating it. Safe to
+          # re-run — existing tenants are skipped.
+          for i in $(seq 1 "$ENSURE_COUNT"); do
+            id="hermes$i"
+            if ! jq -e --arg id "$id" '.[] | select(.id == $id)' data/tenants.json >/dev/null 2>&1; then
+              MH_NO_START=1 npm run cli -- signup --id "$id" --name "Hermes $i"
+            fi
+          done
+
+          npm run cli -- update --canary "$CANARY"
+
+          phone_tenants=$(jq '[.[] | select(.offboardedAt == null and .capabilities.phone.enabled == true)] | length' data/tenants.json)
+          if [ "$phone_tenants" -eq 0 ]; then exit 0; fi
+          case "$HERMES_PHONE_HOOK_URL_TEMPLATE" in
+            http://100.*'{port}'*|https://*'{port}'*) ;;
+            *) echo "HERMES_PHONE_HOOK_URL_TEMPLATE must be a tailnet HTTP or HTTPS URL containing {port}"; exit 1;;
+          esac
+          jq -r '.[] | select(.offboardedAt == null and .capabilities.phone.enabled == true) | .id' data/tenants.json |
+          while read -r tenant; do
+            env_file="tenants/$tenant/.env"
+            hermes_env="tenants/$tenant/data/.env"
+            gateway=$(sed -n 's/^PHONE_GATEWAY_URL=//p' "$env_file")
+            phone_key=$(sed -n 's/^PHONE_GATEWAY_API_KEY=//p' "$env_file")
+            hook_token=$(sed -n 's/^WEBHOOK_PHONE_SECRET=//p' "$hermes_env")
+            port=$(jq -r --arg tenant "$tenant" '.[] | select(.id == $tenant) | .hookPort' data/tenants.json)
+            hook_url="${HERMES_PHONE_HOOK_URL_TEMPLATE//\{tenant\}/$tenant}"
+            hook_url="${hook_url//\{port\}/$port}"
+            [ -n "$gateway" ] && [ -n "$phone_key" ] && [ -n "$hook_token" ] || {
+              echo "missing phone credentials for $tenant"; exit 1;
+            }
+            curl --fail-with-body --silent --show-error -X POST "$gateway/notify-config" \
+              -H "Authorization: Bearer $phone_key" \
+              -H 'content-type: application/json' \
+              --data "$(jq -nc --arg url "$hook_url" --arg token "$hook_token" \
+                '{url:$url,headers:{"X-Gitlab-Token":$token}}')" >/dev/null
+            curl --fail-with-body --silent --show-error -X POST "$hook_url" \
+              -H "X-Gitlab-Token: $hook_token" \
+              -H 'content-type: application/json' \
+              -H "X-Request-ID: rollout-probe-$tenant-${GITHUB_RUN_ID}" \
+              --data '{"event":"probe","message":"Phone hook configuration probe. Verify the phone capability instructions are available; do not contact anyone or perform external work."}' >/dev/null
+            echo "registered and verified phone hook for $tenant"
+          done
