@@ -127,8 +127,8 @@ async function runAgent(tenant, sessionId, message) {
     if (!res.ok) {
       console.warn(`[bridge] ${tenant.id} api ${res.status}: ${text.slice(0, 200)}`);
       return res.status === 429
-        ? '⏳ I am in the middle of something — give me a moment and send that again.'
-        : '⚠️ Sorry — I hit an error handling that. Please try again in a moment.';
+        ? '⏳ I am at capacity for a moment — send that again shortly.'
+        : `⚠️ Sorry — I hit an error handling that (HTTP ${res.status}). Please try again in a moment.`;
     }
     const json = JSON.parse(text);
     const out = (json?.choices?.[0]?.message?.content ?? '').trim();
@@ -194,6 +194,48 @@ async function relayOutboxes() {
   }
 }
 
+/* One session per (channel, user), and Hermes serializes work per session:
+   only one process may hold a session at a time. If the bridge fired every
+   incoming message concurrently, a long task (a site build, a phone follow-up)
+   would hold the session while the next message piled up behind Hermes' lock
+   for minutes and the request dropped — which reads as "it isn't answering".
+   So we run each channel's messages strictly in order: a new message waits in
+   the bridge's own queue behind the one in flight, and the sender gets a quick
+   "one moment" the first time they land behind a busy task. */
+const channelChains = new Map(); // channel_name -> Promise (the tail of its FIFO)
+const channelBusy = new Map();   // channel_name -> bool (a task is in flight)
+const lastBusyAckAt = new Map(); // channel_name -> ms (throttle the ack)
+const BUSY_ACK_COOLDOWN_MS = 45_000;
+
+function enqueue(payload) {
+  const ch = payload.channel_name;
+  if (!ch || !payload.text) return;
+  if (payload.bot || payload.user_name === BOT_USER) return; // never react to our own / bot posts
+
+  // Landing behind a task already running? Tell them once, so it never looks dead.
+  if (channelBusy.get(ch)) {
+    const now = Date.now();
+    if (now - (lastBusyAckAt.get(ch) ?? 0) > BUSY_ACK_COOLDOWN_MS) {
+      lastBusyAckAt.set(ch, now);
+      postMessage(ch, '⏳ Still finishing your previous message — answering this one right after.').catch(() => {});
+    }
+  }
+
+  const prev = channelChains.get(ch) ?? Promise.resolve();
+  const next = prev.then(async () => {
+    channelBusy.set(ch, true);
+    try {
+      await handleMessage(payload);
+    } catch (e) {
+      console.error(`[bridge] handle error: ${e.message}`);
+    } finally {
+      channelBusy.set(ch, false);
+    }
+  });
+  // Keep the chain from retaining rejections / growing unbounded references.
+  channelChains.set(ch, next.catch(() => {}));
+}
+
 const server = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify({ ok: true, loggedIn: !!auth }));
@@ -214,7 +256,7 @@ const server = http.createServer((req, res) => {
     }
     // ack immediately; process async so a slow agent can't time out the webhook
     res.writeHead(200, { 'Content-Type': 'application/json' }).end('{}');
-    handleMessage(payload).catch((e) => console.error(`[bridge] handle error: ${e.message}`));
+    enqueue(payload);
   });
 });
 
