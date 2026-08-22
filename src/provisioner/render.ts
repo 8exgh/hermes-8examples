@@ -97,6 +97,33 @@ export function fleetKimiKey(): string {
   return firstEnv('HERMES_KIMI_API_KEY', 'KIMI_API_KEY');
 }
 
+/**
+ * Per-tenant Telegram bot tokens for the fleet, from the HERMES_TELEGRAM_TOKENS
+ * devops secret — a JSON object {"hermes1":"<token>", ...}. Held as a secret so
+ * every rollout restores each worker's bot; a re-render must never lose it.
+ */
+function telegramTokensMap(): Record<string, string> {
+  const raw = (process.env.HERMES_TELEGRAM_TOKENS ?? '').trim();
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return isPlainObject(parsed) ? (parsed as Record<string, string>) : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * The Telegram bot token for a tenant: the fleet secret map wins (so rollouts
+ * restore it), otherwise a real token already on disk is preserved. Returns ''
+ * when Telegram is not configured for this worker.
+ */
+function telegramTokenFor(tenantId: string, existing: string | undefined): string {
+  const fromMap = (telegramTokensMap()[tenantId] ?? '').toString().trim();
+  if (realValue(fromMap)) return fromMap;
+  return realValue(existing) ? (existing as string).trim() : '';
+}
+
 function ensureDirForContainer(dir: string, mode = 0o755): void {
   mkdirSync(dir, { recursive: true, mode });
   chmodSync(dir, mode);
@@ -229,6 +256,15 @@ export function buildHermesConfig(
     config.fallback_providers = [{ provider: 'kimi-coding', model: KIMI_MODEL }];
   }
 
+  // Telegram runs alongside the Rocket.Chat/API channel whenever a real bot
+  // token is present. The gateway only starts a platform that is BOTH enabled
+  // in config AND has its credential (Telegram's token loads from the
+  // TELEGRAM_BOT_TOKEN env — see gateway/config.py get_connected_platforms),
+  // so enabled:true here + the env token = a live bot.
+  if (realValue(secrets.TELEGRAM_BOT_TOKEN)) {
+    config = deepMerge(config, { platforms: { telegram: { enabled: true } } });
+  }
+
   for (const [id, state] of Object.entries(tenant.capabilities)) {
     if (!state?.enabled) continue;
     config = deepMerge(config, capability(id as CapabilityId).configPatch(tenant, secrets));
@@ -291,7 +327,7 @@ function renderContainerEnv(tenant: Tenant, dir: string): string[] {
  * the first boot so the image's first-boot seeding never writes an example
  * file with empty assignments that would shadow real values.
  */
-function renderHermesEnv(tenant: Tenant, dataDir: string, channelReady: boolean): {
+function renderHermesEnv(tenant: Tenant, dataDir: string): {
   missing: string[];
   secrets: Record<string, string>;
 } {
@@ -340,26 +376,29 @@ function renderHermesEnv(tenant: Tenant, dataDir: string, channelReady: boolean)
     }
   }
 
-  if (tenant.channel === 'telegram') {
+  // Telegram. A worker runs Telegram whenever a real bot token is available
+  // (from the HERMES_TELEGRAM_TOKENS fleet secret, or one already on disk) — in
+  // ADDITION to its Rocket.Chat/API channel. A re-render must NEVER drop a real
+  // token: that was the bug that wiped the fleet's bots on the nightly rollout.
+  // Access is gated by TELEGRAM_ALLOWED_USERS (CSV of numeric ids, or "*" for
+  // open); an empty allowlist fails closed upstream (gateway/config.py). The
+  // legacy TELEGRAM_ALLOW_ALL_USERS var is a no-op upstream — never write it.
+  env.delete('TELEGRAM_ALLOW_ALL_USERS');
+  const tgToken = telegramTokenFor(tenant.id, env.get('TELEGRAM_BOT_TOKEN'));
+  if (realValue(tgToken)) {
+    set('TELEGRAM_BOT_TOKEN', tgToken);
+    set(
+      'TELEGRAM_ALLOWED_USERS',
+      tenant.telegramAllowFrom?.length ? tenant.telegramAllowFrom.join(',') : '*',
+    );
+  } else if (tenant.channel === 'telegram') {
+    // Telegram is the chosen channel but no token yet: surface it as missing
+    // (no placeholder — the gateway skips a disabled/tokenless platform).
     ensure('TELEGRAM_BOT_TOKEN', 'changeme');
-    // Locked to specific peers when telegramAllowFrom is set; otherwise open
-    // (the operator's own bots — flag to revert for real customers).
-    if (tenant.telegramAllowFrom?.length) {
-      set('TELEGRAM_ALLOWED_USERS', tenant.telegramAllowFrom.join(','));
-      env.delete('TELEGRAM_ALLOW_ALL_USERS');
-    } else {
-      set('TELEGRAM_ALLOW_ALL_USERS', 'true');
-      env.delete('TELEGRAM_ALLOWED_USERS');
-    }
-    if (!channelReady) {
-      // A placeholder token would make the gateway retry Telegram forever;
-      // keep the key present (so the operator sees it) but inert.
-      set('TELEGRAM_BOT_TOKEN', env.get('TELEGRAM_BOT_TOKEN') ?? 'changeme');
-    }
-  } else {
-    env.delete('TELEGRAM_BOT_TOKEN');
     env.delete('TELEGRAM_ALLOWED_USERS');
-    env.delete('TELEGRAM_ALLOW_ALL_USERS');
+  } else {
+    if (!realValue(env.get('TELEGRAM_BOT_TOKEN'))) env.delete('TELEGRAM_BOT_TOKEN');
+    env.delete('TELEGRAM_ALLOWED_USERS');
   }
 
   writeEnvFile(file, env);
@@ -428,11 +467,7 @@ export function renderTenant(tenant: Tenant, fleet: Fleet): string[] {
   const imageRef = fleet.pinnedImageRef ?? fleet.image;
   const res = resourcesFor(tenant);
 
-  // Telegram only switches on once a real bot token is in place.
-  const existingToken = readEnvFile(path.join(dataDir, '.env')).get('TELEGRAM_BOT_TOKEN');
-  const channelReady = !!existingToken && existingToken !== 'changeme';
-
-  const hermesEnv = renderHermesEnv(tenant, dataDir, channelReady);
+  const hermesEnv = renderHermesEnv(tenant, dataDir);
 
   const configFile = path.join(dataDir, 'config.yaml');
   writeFileSync(configFile, toYaml(buildHermesConfig(tenant, hermesEnv.secrets) as YamlValue));
