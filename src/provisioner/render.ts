@@ -36,20 +36,65 @@ export const FLEET_PROVIDER = process.env.HERMES_FLEET_PROVIDER || 'anthropic';
 
 /**
  * The secret each provider reads from $HERMES_HOME/.env (Hermes' own names).
- * Inherited from the control plane's environment at render time; empty or
- * placeholder values are treated as missing so `apply` keeps reporting them.
+ * Inherited from the control plane's environment at render time (a bare or
+ * HERMES_-prefixed var); empty/placeholder values are treated as missing so
+ * `apply` keeps reporting them.
  */
 export const PROVIDER_KEY_ENV: Record<string, string | undefined> = {
   anthropic: 'ANTHROPIC_API_KEY',
   'openai-api': 'OPENAI_API_KEY', // Hermes' direct-OpenAI provider slug
   openrouter: 'OPENROUTER_API_KEY',
+  'kimi-coding': 'KIMI_API_KEY',
   nous: undefined, // OAuth via `hermes setup --portal` (auth.json), no key
 };
 
+/** Kimi model served by the fleet's Kimi coding subscription (see registry). */
+export const KIMI_MODEL = process.env.HERMES_KIMI_MODEL || 'k3';
+
+function realValue(v: string | undefined): boolean {
+  return !!v && v.trim() !== '' && v.trim() !== 'changeme';
+}
+
+/** First real value among the given env var names (bare or HERMES_-prefixed). */
+function firstEnv(...names: string[]): string {
+  for (const n of names) {
+    const v = (process.env[n] ?? '').trim();
+    if (realValue(v)) return v;
+  }
+  return '';
+}
+
 function inheritedSecret(key: string | undefined): string {
-  if (!key) return '';
-  const value = (process.env[key] ?? '').trim();
-  return value && value !== 'changeme' ? value : '';
+  return key ? firstEnv(`HERMES_${key}`, key) : '';
+}
+
+/**
+ * Anthropic setup-tokens (sk-ant-oat01-…) for the fleet, from
+ * HERMES_ANTHROPIC_TOKENS (comma/space separated) or
+ * HERMES_ANTHROPIC_TOKEN[_2]. Hermes reads ANTHROPIC_TOKEN as a Claude Code
+ * OAuth/setup-token override — the same credential the OpenClaw fleet uses.
+ */
+function anthropicTokens(): string[] {
+  const list = (process.env.HERMES_ANTHROPIC_TOKENS ?? '')
+    .split(/[,\s]+/)
+    .map((s) => s.trim())
+    .filter(realValue);
+  for (const n of ['HERMES_ANTHROPIC_TOKEN', 'HERMES_ANTHROPIC_TOKEN_2', 'ANTHROPIC_TOKEN']) {
+    const v = (process.env[n] ?? '').trim();
+    if (realValue(v) && !list.includes(v)) list.push(v);
+  }
+  return list;
+}
+
+/** Spread the fleet across the available Claude accounts, stably per tenant. */
+function anthropicTokenFor(tenantId: string): string {
+  const tokens = anthropicTokens();
+  return tokens.length ? tokens[tenantHash(tenantId) % tokens.length] : '';
+}
+
+/** The fleet's Kimi key (for the kimi-coding fallback provider). */
+export function fleetKimiKey(): string {
+  return firstEnv('HERMES_KIMI_API_KEY', 'KIMI_API_KEY');
 }
 
 function ensureDirForContainer(dir: string, mode = 0o755): void {
@@ -178,6 +223,12 @@ export function buildHermesConfig(
     },
   };
 
+  // Cross-provider failover: when Anthropic is rate-limited or down, fall back
+  // to the fleet's Kimi coding subscription instead of dropping the session.
+  if (realValue(secrets.KIMI_API_KEY) && FLEET_PROVIDER !== 'kimi-coding') {
+    config.fallback_providers = [{ provider: 'kimi-coding', model: KIMI_MODEL }];
+  }
+
   for (const [id, state] of Object.entries(tenant.capabilities)) {
     if (!state?.enabled) continue;
     config = deepMerge(config, capability(id as CapabilityId).configPatch(tenant, secrets));
@@ -253,8 +304,25 @@ function renderHermesEnv(tenant: Tenant, dataDir: string, channelReady: boolean)
     env.set(key, value);
   };
 
+  // Provider credential. Anthropic authenticates with either a plain API key
+  // (ANTHROPIC_API_KEY) or a Claude Code setup-token (ANTHROPIC_TOKEN, a
+  // sk-ant-oat01-… OAuth token) — the latter is what the OpenClaw fleet uses;
+  // spread the fleet's Claude accounts across tenants. Only report the API key
+  // as missing when NEITHER credential is present.
   const providerKey = PROVIDER_KEY_ENV[FLEET_PROVIDER];
-  if (providerKey) ensure(providerKey, inheritedSecret(providerKey) || 'changeme');
+  if (FLEET_PROVIDER === 'anthropic') {
+    const token = anthropicTokenFor(tenant.id);
+    if (token) set('ANTHROPIC_TOKEN', token);
+    if (realValue(env.get('ANTHROPIC_TOKEN'))) env.delete('ANTHROPIC_API_KEY');
+    else ensure('ANTHROPIC_API_KEY', inheritedSecret('ANTHROPIC_API_KEY') || 'changeme');
+  } else if (providerKey) {
+    ensure(providerKey, inheritedSecret(providerKey) || 'changeme');
+  }
+
+  // Kimi coding fallback (kimi-coding provider): rendered whenever the fleet
+  // key is available so config.yaml's fallback chain has a credential.
+  const kimi = fleetKimiKey();
+  if (kimi) set('KIMI_API_KEY', kimi);
 
   // The Rocket.Chat bridge speaks to this; loopback-published only.
   set('API_SERVER_ENABLED', 'true');

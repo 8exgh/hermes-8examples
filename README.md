@@ -188,10 +188,17 @@ changes in `tenant.resources`/capabilities, or extend the renderer.
 - **Browser sandboxing**: Chromium runs `--no-sandbox` because `cap_drop: ALL`
   leaves its own sandbox nothing to use. The container is the isolation
   boundary; untrusted-web workloads deserve gVisor/Kata or a VM tier.
-- **Model**: `anthropic/claude-opus-4-8` by default (`HERMES_FLEET_MODEL` /
-  `HERMES_FLEET_PROVIDER` at render time), the same model the OpenClaw fleet
-  runs, with `cron.model` pinned so the heartbeat never trips Hermes'
-  model-drift guard.
+- **Model & credentials**: `anthropic/claude-opus-4-8` by default
+  (`HERMES_FLEET_MODEL` / `HERMES_FLEET_PROVIDER` at render time), with
+  `cron.model` pinned so the heartbeat never trips Hermes' model-drift guard.
+  Anthropic authenticates with a Claude Code **setup-token**
+  (`ANTHROPIC_TOKEN`, `sk-ant-oat01-…`) — the same credential the OpenClaw
+  fleet uses — passed as `HERMES_ANTHROPIC_TOKEN` / `HERMES_ANTHROPIC_TOKEN_2`
+  (or a comma list in `HERMES_ANTHROPIC_TOKENS`) and **rotated across tenants**
+  so multiple Claude accounts share the load; a plain `ANTHROPIC_API_KEY`
+  works too. When `HERMES_KIMI_API_KEY` is set, `kimi-coding/k3` is rendered as
+  a `fallback_providers` entry so a rate-limited or down Anthropic account
+  fails over instead of dropping the session.
 
 ## Deploying
 

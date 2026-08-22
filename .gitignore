@@ -11,3 +11,6 @@ data/
 .vscode/
 
 *.log
+
+# extracted provider keys (never commit)
+.secrets/
