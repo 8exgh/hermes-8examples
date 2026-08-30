@@ -11,6 +11,8 @@ if [ -z "${HERMES_TELEMETRY_TOKEN:-}" ]; then
     exec sleep infinity
 fi
 export HOME=/opt/data
+unset npm_config_before NPM_CONFIG_BEFORE
+export npm_config_registry=https://registry.npmjs.org
 export npm_config_prefer_online=true
 export npm_config_update_notifier=false
 cd /opt/data
