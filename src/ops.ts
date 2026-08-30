@@ -1,10 +1,10 @@
-import { rmSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { CAPABILITIES, capability } from './capabilities/registry.js';
 import { deliverToWorkspace, pickNudge } from './nudges/engine.js';
-import { buildFleetImage, dockerAvailable, imageExists, pullFleetImage } from './provisioner/docker.js';
+import { buildFleetImage, containerStatus, dockerAvailable, imageExists, pullFleetImage } from './provisioner/docker.js';
 import { getProvisioner } from './provisioner/index.js';
-import { managedVersion } from './provisioner/render.js';
+import { managedVersion, MODEL_CREDENTIAL_KEYS } from './provisioner/render.js';
 import {
   HOOK_PORT_OFFSET,
   TENANTS_DIR,
@@ -14,6 +14,7 @@ import {
   saveFleet,
   saveTenants,
   slugify,
+  tenantDataDir,
   tenantDir,
   upsertTenant,
 } from './store.js';
@@ -45,7 +46,8 @@ export function activeTenants(): Tenant[] {
 /** Render the tenant to disk on the current fleet release and (re)start its runtime. */
 export function applyTenant(tenant: Tenant, opts: { start?: boolean } = {}): ApplyResult {
   const fleet = loadFleet();
-  const wantStart = opts.start !== false && process.env.MH_NO_START !== '1';
+  const requestedStart = opts.start !== false && process.env.MH_NO_START !== '1';
+  const wantStart = requestedStart && tenant.modelAccess !== 'suppressed';
   const { started, missingEnv, heartbeatCreated } = getProvisioner(tenant.tier).apply(tenant, fleet, {
     start: wantStart,
   });
@@ -56,6 +58,9 @@ export function applyTenant(tenant: Tenant, opts: { start?: boolean } = {}): App
     appliedAt: new Date().toISOString(),
   };
   upsertTenant(tenant);
+  if (tenant.modelAccess === 'suppressed' && requestedStart) {
+    getProvisioner(tenant.tier).teardown(tenant);
+  }
   return { tenant, missingEnv, started, heartbeatCreated };
 }
 
@@ -82,6 +87,7 @@ export function signup(input: SignupInput, opts: { start?: boolean } = {}): Appl
     gatewayPort,
     hookPort: gatewayPort + HOOK_PORT_OFFSET,
     createdAt: now,
+    modelAccess: 'suppressed',
     capabilities: {},
     nudgeLog: [],
   };
@@ -99,6 +105,42 @@ export function signup(input: SignupInput, opts: { start?: boolean } = {}): Appl
   runNudge(tenant);
 
   return applyTenant(tenant, opts);
+}
+
+export function setModelAccess(tenantId: string, assigned: boolean, opts: { start?: boolean } = {}): ApplyResult {
+  const tenant = getTenant(tenantId);
+  tenant.modelAccess = assigned ? 'assigned' : 'suppressed';
+  upsertTenant(tenant);
+  return applyTenant(tenant, opts);
+}
+
+/** Sync desired assignment against actual credentials and container state. */
+export function syncModelAccess(assignedIds: ReadonlySet<string>): { assigned: number; suppressed: number; changed: string[] } {
+  const tenants = loadTenants();
+  let assigned = 0;
+  let suppressed = 0;
+  const changed: string[] = [];
+  for (const tenant of tenants) {
+    if (tenant.offboardedAt) continue;
+    const next = assignedIds.has(tenant.id) ? 'assigned' : 'suppressed';
+    const file = path.join(tenantDataDir(tenant.id), '.env');
+    const env = existsSync(file) ? readFileSync(file, 'utf8') : '';
+    const hasRealCredential = MODEL_CREDENTIAL_KEYS.some((key) => {
+      const match = env.match(new RegExp(`^${key}=(.+)$`, 'm'));
+      return Boolean(match?.[1] && match[1] !== 'changeme');
+    });
+    const credentialsMatch = next === 'assigned' ? hasRealCredential : !hasRealCredential;
+    const status = containerStatus(tenant);
+    const runtimeMatch = next === 'assigned'
+      ? /\bUp\b/i.test(status) && !/Restarting/i.test(status)
+      : status === 'not created' || /\bExited\b/i.test(status);
+    if (!credentialsMatch || !runtimeMatch) changed.push(tenant.id);
+    tenant.modelAccess = next;
+    if (next === 'assigned') assigned += 1;
+    else suppressed += 1;
+  }
+  saveTenants(tenants);
+  return { assigned, suppressed, changed };
 }
 
 export function setCapability(

@@ -60,6 +60,8 @@ export interface Tenant {
   /** Telegram numeric user ids allowed to reach this bot; empty/absent = open to anyone. */
   telegramAllowFrom?: string[];
   createdAt: string;
+  /** Model credentials/runtime are enabled only after 8examples assigns this worker. */
+  modelAccess?: 'assigned' | 'suppressed';
   capabilities: Partial<Record<CapabilityId, CapabilityState>>;
   nudgeLog: NudgeRecord[];
   applied?: AppliedRelease;

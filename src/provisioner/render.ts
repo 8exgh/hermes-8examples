@@ -48,6 +48,23 @@ export const PROVIDER_KEY_ENV: Record<string, string | undefined> = {
   nous: undefined, // OAuth via `hermes setup --portal` (auth.json), no key
 };
 
+/** Credentials capable of funding a model call; escrowed outside the data mount while unassigned. */
+export const MODEL_CREDENTIAL_KEYS = [
+  'ANTHROPIC_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'OPENAI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'KIMI_API_KEY',
+  'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
+  'DEEPSEEK_API_KEY',
+  'GROQ_API_KEY',
+  'XAI_API_KEY',
+  'MISTRAL_API_KEY',
+  'TOGETHER_API_KEY',
+  'FIREWORKS_API_KEY',
+] as const;
+
 /** Kimi model served by the fleet's Kimi coding subscription (see registry). */
 export const KIMI_MODEL = process.env.HERMES_KIMI_MODEL || 'k3';
 
@@ -333,6 +350,8 @@ function renderHermesEnv(tenant: Tenant, dataDir: string): {
 } {
   const file = path.join(dataDir, '.env');
   const env = readEnvFile(file);
+  const escrowFile = path.join(tenantDir(tenant.id), '.model-credentials.env');
+  const escrow = readEnvFile(escrowFile);
   const ensure = (key: string, value: string): void => {
     if (!env.get(key)) env.set(key, value);
   };
@@ -340,13 +359,29 @@ function renderHermesEnv(tenant: Tenant, dataDir: string): {
     env.set(key, value);
   };
 
+  if (tenant.modelAccess === 'suppressed') {
+    for (const key of MODEL_CREDENTIAL_KEYS) {
+      const value = env.get(key);
+      if (realValue(value)) escrow.set(key, value as string);
+      env.delete(key);
+    }
+    writeEnvFile(escrowFile, escrow);
+  } else {
+    for (const key of MODEL_CREDENTIAL_KEYS) {
+      const value = escrow.get(key);
+      if (!realValue(env.get(key)) && realValue(value)) env.set(key, value as string);
+    }
+  }
+
   // Provider credential. Anthropic authenticates with either a plain API key
   // (ANTHROPIC_API_KEY) or a Claude Code setup-token (ANTHROPIC_TOKEN, a
   // sk-ant-oat01-… OAuth token) — the latter is what the OpenClaw fleet uses;
   // spread the fleet's Claude accounts across tenants. Only report the API key
   // as missing when NEITHER credential is present.
   const providerKey = PROVIDER_KEY_ENV[FLEET_PROVIDER];
-  if (FLEET_PROVIDER === 'anthropic') {
+  if (tenant.modelAccess === 'suppressed') {
+    // No provider credential is rendered until the sales system assigns this worker.
+  } else if (FLEET_PROVIDER === 'anthropic') {
     const token = anthropicTokenFor(tenant.id);
     if (token) set('ANTHROPIC_TOKEN', token);
     if (realValue(env.get('ANTHROPIC_TOKEN'))) env.delete('ANTHROPIC_API_KEY');
@@ -358,7 +393,7 @@ function renderHermesEnv(tenant: Tenant, dataDir: string): {
   // Kimi coding fallback (kimi-coding provider): rendered whenever the fleet
   // key is available so config.yaml's fallback chain has a credential.
   const kimi = fleetKimiKey();
-  if (kimi) set('KIMI_API_KEY', kimi);
+  if (tenant.modelAccess !== 'suppressed' && kimi) set('KIMI_API_KEY', kimi);
 
   // The Rocket.Chat bridge speaks to this; loopback-published only.
   set('API_SERVER_ENABLED', 'true');

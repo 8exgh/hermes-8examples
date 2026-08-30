@@ -1,5 +1,5 @@
 import { CAPABILITIES, isCapabilityId } from './capabilities/registry.js';
-import { applyTenant, offboardTenant, runNudge, runNudgesAll, setCapability, signup, summarize, updateFleet } from './ops.js';
+import { applyTenant, offboardTenant, runNudge, runNudgesAll, setCapability, setModelAccess, signup, summarize, syncModelAccess, updateFleet } from './ops.js';
 import { managedVersion } from './provisioner/render.js';
 import { getTenant, loadFleet, loadTenants, tenantDir } from './store.js';
 import type { ChannelId } from './types.js';
@@ -97,6 +97,28 @@ async function main(): Promise<void> {
       console.log(`Signed up "${name}" as tenant ${result.tenant.id} (api port ${result.tenant.gatewayPort}, hook port ${result.tenant.hookPort})`);
       reportApply(result);
       break;
+    }
+    case 'model-access': {
+      const [action, tenantId, state] = positional;
+      if (action === 'set') {
+        if (!tenantId || (state !== 'assigned' && state !== 'suppressed')) {
+          throw new Error('Usage: model-access set <tenant> <assigned|suppressed>');
+        }
+        const result = setModelAccess(tenantId, state === 'assigned', { start });
+        console.log(`${tenantId}: model access ${state}`);
+        reportApply(result);
+        break;
+      }
+      if (action === 'sync') {
+        const ids = new Set((str(flags, 'assigned') ?? '').split(',').map((id) => id.trim()).filter(Boolean));
+        const result = syncModelAccess(ids);
+        if (flags.has('apply')) {
+          for (const id of result.changed) setModelAccess(id, ids.has(id), { start });
+        }
+        console.log(`Model access synchronized: ${result.assigned} assigned, ${result.suppressed} suppressed, ${result.changed.length} changed${flags.has('apply') ? ' and applied' : ''}`);
+        break;
+      }
+      throw new Error('Usage: model-access <set <tenant> <assigned|suppressed> | sync --assigned id,id,...>');
     }
     case 'list': {
       for (const t of loadTenants()) {
