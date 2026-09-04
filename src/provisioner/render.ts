@@ -449,12 +449,38 @@ function template(name: string, vars: Record<string, string>): string {
   return raw.replace(/\{\{([A-Z_]+)\}\}/g, (_, key: string) => vars[key] ?? '');
 }
 
-function capabilitySections(tenant: Tenant): { enabled: string; upgrades: string } {
+/** Addresses from the tenant's (externally-provisioned) workspace/mailbox.md. */
+function mailboxAddresses(workspace: string): string[] {
+  const file = path.join(workspace, 'mailbox.md');
+  if (!existsSync(file)) return [];
+  const out: string[] = [];
+  for (const line of readFileSync(file, 'utf8').split('\n')) {
+    const m = line.match(/^-\s*([^\s:@]+@[^\s:]+)\s*:/);
+    if (m) out.push(m[1]);
+  }
+  return out;
+}
+
+function capabilitySections(tenant: Tenant, workspace: string): { enabled: string; upgrades: string } {
   const enabled: string[] = [];
   const upgrades: string[] = [];
   for (const def of CAPABILITIES.slice().sort((a, b) => a.priority - b.priority)) {
     if (tenant.capabilities[def.id]?.enabled) {
-      enabled.push(`- **${def.label}** — ${def.tagline} (details: \`capabilities/${def.id}.md\`)`);
+      let line = `- **${def.label}** — ${def.tagline} (details: \`capabilities/${def.id}.md\`)`;
+      // Name the live mailbox addresses in the always-loaded AGENTS.md — the
+      // account index (mailbox.md) is only read on demand, so a claw with
+      // provisioned mailboxes otherwise answers "I don't have your email on
+      // file" when asked cold.
+      if (def.id === 'email') {
+        const addrs = mailboxAddresses(workspace);
+        if (addrs.length > 0) {
+          line +=
+            `\n  - Live mailboxes already connected (credentials in \`mailboxes/\`): ` +
+            `${addrs.join(', ')}. When the owner asks about "my email", THESE are the ` +
+            `accounts — never say email isn't set up. Read \`mailbox.md\` for how to use them.`;
+        }
+      }
+      enabled.push(line);
     } else if (def.offerNudges.length > 0) {
       upgrades.push(`- **${def.label}** — ${def.tagline}\n  - Offer line: "${def.offerNudges[0]}"`);
     }
@@ -527,7 +553,7 @@ export function renderTenant(tenant: Tenant, fleet: Fleet): string[] {
     }),
   );
 
-  const sections = capabilitySections(tenant);
+  const sections = capabilitySections(tenant, workspace);
   const vars = {
     NAME: tenant.name,
     TENANT_ID: tenant.id,
